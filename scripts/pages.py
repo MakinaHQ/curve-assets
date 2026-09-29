@@ -4,16 +4,35 @@ from typing import Dict
 
 import requests
 from github import Github, InputGitTreeElement
+from github.GithubException import UnknownObjectException
+from rich.console import Console
+
+console = Console()
 
 
 def load_gh_pages_tokenlist(repo_name: str, file_path: str) -> Dict:
     gh_pages_url = f"https://{repo_name.split('/')[0]}.github.io/{repo_name.split('/')[1]}/{file_path}"
     try:
-        response = requests.get(gh_pages_url)
+        # A 404 here is an expected, recoverable state: the branch has not been
+        # published yet, so there is simply no token list to merge against.
+        # Every other RequestException (timeout, 5xx, TLS) is a genuine failure
+        # and is re-raised rather than being reported as "no existing list",
+        # which would silently discard previously published tokens on the next
+        # generation run.
+        response = requests.get(gh_pages_url, timeout=30)
+        if response.status_code == 404:
+            console.print(
+                f"[warning]No published tokenlist at {gh_pages_url}; starting from an empty list.[/warning]"
+            )
+            return {}
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.RequestException:
-        return {}
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(
+            f"Failed to load the existing tokenlist from {gh_pages_url}: {exc}. "
+            "Refusing to continue, because regenerating without the previous list "
+            "would drop every token that is not re-discovered from the images folder."
+        ) from exc
 
 
 def upload_to_github_pages(content: Dict, repo_name: str, file_path: str):
@@ -24,11 +43,15 @@ def upload_to_github_pages(content: Dict, repo_name: str, file_path: str):
     g = Github(github_token)
     repo = g.get_repo(repo_name)
 
-    # Get the gh-pages branch
+    # Get the gh-pages branch. A missing branch raises UnknownObjectException,
+    # which we handle by creating it; every other failure (auth, rate limit,
+    # network) must propagate instead of being silently swallowed by a bare
+    # `except:`, which previously turned a hard failure into a confusing
+    # "branch does not exist" path.
     try:
         branch = repo.get_branch("gh-pages")
-    except:  # noqa: E722
-        # If gh-pages branch doesn't exist, create it
+    except UnknownObjectException:
+        # If gh-pages branch doesn't exist, create it from the default branch
         sb = repo.get_branch(repo.default_branch)
         repo.create_git_ref(ref="refs/heads/gh-pages", sha=sb.commit.sha)
         branch = repo.get_branch("gh-pages")
