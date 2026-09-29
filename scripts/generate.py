@@ -57,21 +57,30 @@ def generate_tokenlist(
     # Use the input tokenlist for scanning
     networks, tokens_in_folder, tokens_to_add = scan_images_folder(existing_tokenlist)
 
+    # These two filters are independent: a caller can supply both an include list
+    # and an ignore list, and an exclude must win regardless of which was passed.
+    # A previous `if/elif` silently dropped the ignore list whenever an include
+    # list was also supplied.
     if networks_to_include:
         networks = [net for net in networks if net in networks_to_include]
-    elif networks_to_ignore:
+    if networks_to_ignore:
         networks = [net for net in networks if net not in networks_to_ignore]
 
     display_summary(networks, tokens_in_folder, tokens_to_add)
 
     all_failed_tokens = {}
-    processed_tokens = []
+    # `processed_tokens` is a single accumulator for every network. It used to be
+    # reassigned from `process_network()` inside the loop, which discarded the
+    # tokens of all previously processed networks, and was then passed to
+    # `list.extend()` as both the receiver and the argument -- doubling that
+    # network's tokens instead of appending them.
+    processed_tokens: List[Dict] = []
 
     for network in networks:
-        processed_tokens, _ = process_network(network, existing_tokenlist, all_failed_tokens)
-        ensure_native_token_in_list(processed_tokens, network)
+        network_tokens, _ = process_network(network, existing_tokenlist, all_failed_tokens)
+        ensure_native_token_in_list(network_tokens, network)
 
-        processed_tokens.extend(processed_tokens)
+        processed_tokens.extend(network_tokens)
 
     # Update the tokenlist after processing all networks
     updated_tokenlist = update_tokenlist(processed_tokens, existing_tokenlist)
